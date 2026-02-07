@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  discord-bot:
+    build: .
+    container_name: twitch-discord-bot
+    restart: unless-stopped
+    volumes:
+      # Persist data
+      - ./data:/app/data
+    ports:
+      # Exposing flask port for health checks
+      - "5000:5000"
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
+      - TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET}
+      - DB_PATH=/app/data/bot_data.db
+    env_file:
+      - .env
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge

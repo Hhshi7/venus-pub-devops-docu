@@ -101,7 +101,7 @@ The application runs as a single Docker container on self-hosted ARM hardware.
 - Volume persists across container restarts
 - Survives host reboots and container rebuilds
 
-![Architecture Diagram](/diagrams/achitecture.jpg)
+![Architecture Diagram](/diagrams/architecture.jpg)
 
 ---
 

@@ -1,0 +1,148 @@
+name: Deploy to Raspberry Pi
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: self-hosted  # Windows runner
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Validate configuration files
+        shell: powershell
+        run: |
+          Write-Host "Validating configuration files..."
+          
+          # Check required files exist
+          $requiredFiles = @(
+            "Dockerfile",
+            "docker-compose.yml",
+            "requirements.txt",
+            "schema.sql"
+          )
+          
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path $file)) {
+              Write-Host "Missing required file: $file"
+              exit 1
+            }
+          }
+          
+          Write-Host "All required files present"
+      
+      - name: Deploy to Raspberry Pi
+        shell: powershell
+        env:
+          RPI_HOST: ${{ secrets.RPI_HOST }}
+          RPI_USER: ${{ secrets.RPI_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          SSH_KEY_PATH: ${{ secrets.SSH_KEY_PATH }}
+        run: |
+          Write-Host "Preparing deployment to $env:RPI_HOST..."
+          
+          # Test SSH connection first
+          Write-Host "Testing SSH connection..."
+          ssh -i $env:SSH_KEY_PATH -o "StrictHostKeyChecking=no" -o "ConnectTimeout=10" `
+            "$env:RPI_USER@$env:RPI_HOST" "echo 'SSH connection successful'" 2>&1
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to connect via SSH"
+            exit 1
+          }
+          
+          # Create deployment directory
+          Write-Host "Creating deployment directories..."
+          ssh -i $env:SSH_KEY_PATH "$env:RPI_USER@$env:RPI_HOST" `
+            "mkdir -p $env:DEPLOY_PATH/data"
+          
+          # Stop existing containers
+          Write-Host "Stopping existing containers..."
+          ssh -i $env:SSH_KEY_PATH "$env:RPI_USER@$env:RPI_HOST" `
+            "cd $env:DEPLOY_PATH && docker-compose down 2>/dev/null || true"
+          
+          # Transfer files
+          Write-Host "Transferring application files..."
+          $files = @("Dockerfile", "docker-compose.yml", "requirements.txt", "schema.sql")
+          
+          foreach ($file in $files) {
+            Write-Host "  → Copying $file"
+            scp -i $env:SSH_KEY_PATH -o "StrictHostKeyChecking=no" `
+              $file "$env:RPI_USER@$($env:RPI_HOST):$env:DEPLOY_PATH/"
+            
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Failed to copy $file"
+              exit 1
+            }
+          }
+          
+          # Transfer source directory
+          Write-Host "  → Copying src/ directory"
+          scp -i $env:SSH_KEY_PATH -r -o "StrictHostKeyChecking=no" `
+            src "$env:RPI_USER@$($env:RPI_HOST):$env:DEPLOY_PATH/"
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to copy source code"
+            exit 1
+          }
+          
+          # Build and start containers
+          Write-Host "Building and starting containers..."
+          ssh -i $env:SSH_KEY_PATH "$env:RPI_USER@$env:RPI_HOST" `
+            "cd $env:DEPLOY_PATH && docker-compose up -d --build"
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to start containers"
+            exit 1
+          }
+          
+          # Wait for startup
+          Write-Host "Waiting for application startup..."
+          Start-Sleep -Seconds 10
+          
+          # Show recent logs
+          Write-Host "Recent container logs:"
+          ssh -i $env:SSH_KEY_PATH "$env:RPI_USER@$env:RPI_HOST" `
+            "cd $env:DEPLOY_PATH && docker-compose logs --tail=50"
+      
+      - name: Verify deployment
+        shell: powershell
+        env:
+          RPI_HOST: ${{ secrets.RPI_HOST }}
+          RPI_USER: ${{ secrets.RPI_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          SSH_KEY_PATH: ${{ secrets.SSH_KEY_PATH }}
+        run: |
+          Write-Host "Verifying deployment..."
+          
+          # Check container status
+          $containerStatus = ssh -i $env:SSH_KEY_PATH "$env:RPI_USER@$env:RPI_HOST" `
+            "cd $env:DEPLOY_PATH && docker-compose ps --format json"
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to get container status"
+            exit 1
+          }
+          
+          # Parse and validate
+          $containers = $containerStatus | ConvertFrom-Json
+          $runningContainers = @($containers | Where-Object { $_.State -eq "running" })
+          
+          if ($runningContainers.Count -eq 0) {
+            Write-Host "No containers are running!"
+            Write-Host "Container status:"
+            ssh -i $env:SSH_KEY_PATH "$env:RPI_USER@$env:RPI_HOST" `
+              "cd $env:DEPLOY_PATH && docker-compose ps"
+            exit 1
+          }
+          
+          Write-Host "Deployment successful!"
+          Write-Host "Running containers:"
+          foreach ($container in $runningContainers) {
+            Write-Host "  → $($container.Name): $($container.State)"
+          }
